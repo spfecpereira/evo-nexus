@@ -2061,21 +2061,27 @@ def main():
         print(f"    {T('log_at')} {DIM}logs/uv-sync.log{RESET}")
 
     # Dashboard build
-    frontend_dir = WORKSPACE / "dashboard" / "frontend"
+    dashboard_dir = WORKSPACE / "dashboard"
+    frontend_dir = dashboard_dir / "frontend"
     if (frontend_dir / "package.json").exists():
         print(f"  {DIM}{T('installing_dashboard_deps')}{RESET}", end="", flush=True)
-        ret_install = os.system(f"cd {frontend_dir} && npm install --silent 2>{WORKSPACE}/logs/npm-install.log")
+        ret_install = os.system(f"cd {dashboard_dir} && npm install --silent 2>{WORKSPACE}/logs/npm-install.log")
         if ret_install != 0:
             print(f"\r  {RED}✗{RESET} {T('dashboard_deps_failed')}                    ")
-            print(f"    {YELLOW}{T('try_manually')} {BOLD}cd dashboard/frontend && npm install{RESET}")
+            print(f"    {YELLOW}{T('try_manually')} {BOLD}cd dashboard && npm install{RESET}")
             print(f"    {T('log_at')} {DIM}logs/npm-install.log{RESET}")
         else:
             print(f"\r  {GREEN}✓{RESET} {T('installed_dashboard_deps')}                    ")
             print(f"  {DIM}{T('building_dashboard')}{RESET}", end="", flush=True)
-            ret_build = os.system(f"cd {frontend_dir} && npm run build 2>{WORKSPACE}/logs/npm-build.log 1>/dev/null")
+            ret_build = os.system(
+                f"cd {dashboard_dir} && "
+                "npm --workspace @evoapi/evonexus-ui run build && "
+                "npm --workspace frontend run build "
+                f"2>{WORKSPACE}/logs/npm-build.log 1>/dev/null"
+            )
             if ret_build != 0:
                 print(f"\r  {RED}✗{RESET} {T('dashboard_build_failed')}                    ")
-                print(f"    {YELLOW}{T('try_manually')} {BOLD}cd dashboard/frontend && npm run build{RESET}")
+                print(f"    {YELLOW}{T('try_manually')} {BOLD}cd dashboard && npm --workspace @evoapi/evonexus-ui run build && npm --workspace frontend run build{RESET}")
                 print(f"    {T('log_at')} {DIM}logs/npm-build.log{RESET}")
             else:
                 print(f"\r  {GREEN}✓{RESET} {T('built_dashboard')}                    ")
