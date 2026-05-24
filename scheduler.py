@@ -62,7 +62,7 @@ def acquire_lock() -> bool:
             os.kill(existing_pid, 0)
             print(f"  Scheduler already running (PID {existing_pid}). Exiting.")
             return False
-        except (ProcessLookupError, ValueError):
+        except (PermissionError, ProcessLookupError, ValueError):
             # Stale lock — remove and retry once
             PID_FILE.unlink(missing_ok=True)
             try:

@@ -9,6 +9,11 @@
 # run them with: make run R=<id>  (e.g. make run R=fin-pulse)
 # List all available: make list-routines
 
+# Keep uv's cache inside the project when the user's global cache is not
+# writable (containers, restricted shells, CI sandboxes).
+UV_CACHE_DIR ?= $(CURDIR)/.uv-cache
+export UV_CACHE_DIR
+
 # Auto-detect: uv if available, fallback to python3
 PYTHON := $(shell command -v uv >/dev/null 2>&1 && echo "uv run python" || echo "python3")
 ADW_DIR := ADWs/routines
@@ -115,6 +120,18 @@ stop:               ## 🛑 Stop all EvoNexus services (dashboard + terminal-ser
 	@pkill -f "[d]ashboard/backend.*app.py" 2>/dev/null || true
 	@pkill -f "[a]pp.py" 2>/dev/null || true
 	@echo "✅ All services stopped"
+
+service-install:    ## 🧩 Install LAN systemd services for current user: sudo make service-install
+	@python3 scripts/install_lan_systemd.py --user $${SUDO_USER:-$${USER}} --purge-evonexus
+
+service-restart:    ## 🔄 Restart EvoNexus systemd stack
+	@sudo systemctl restart evo-nexus-dashboard.service evo-nexus-terminal.service evo-nexus-scheduler.service
+
+service-status:     ## 📊 Show EvoNexus systemd status
+	@systemctl status evo-nexus.service evo-nexus-dashboard.service evo-nexus-terminal.service evo-nexus-scheduler.service
+
+service-logs:       ## 📜 Follow EvoNexus systemd logs
+	@sudo journalctl -u evo-nexus-dashboard.service -u evo-nexus-terminal.service -u evo-nexus-scheduler.service -f
 
 uninstall:          ## 🗑️  Full cleanup — stop services, remove nginx, data, deps (DESTRUCTIVE)
 	@echo ""

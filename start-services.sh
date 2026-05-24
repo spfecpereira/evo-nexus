@@ -12,7 +12,7 @@
 #   • operators running it manually after a reboot
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export PATH="/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin"
+export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 cd "$SCRIPT_DIR" || exit 1
 
 # Load environment variables

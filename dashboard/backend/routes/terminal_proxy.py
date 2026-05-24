@@ -133,6 +133,8 @@ def register_websocket_proxy(sock) -> None:
         )
         return
 
+    print("terminal_proxy: WebSocket proxy registered at /terminal/ws", flush=True)
+
     @sock.route("/terminal/ws")
     def proxy_ws(client_ws):
         """Bidirectional bridge: browser <-> Flask <-> terminal-server.

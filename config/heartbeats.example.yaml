@@ -96,7 +96,7 @@ heartbeats:
   - id: integrations-health
     agent: system
     interval_seconds: 900  # 15 minutes
-    max_turns: 0
+    max_turns: 1
     timeout_seconds: 60
     lock_timeout_seconds: 1800
     wake_triggers:
@@ -106,4 +106,6 @@ heartbeats:
     goal_id: null
     required_secrets: []
     handler: plugin_integration_health.tick
-    decision_prompt: ""
+    decision_prompt: >
+      Run the in-process plugin integration health check and record whether any
+      installed plugin integration needs operator attention.

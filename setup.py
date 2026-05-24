@@ -18,6 +18,21 @@ from pathlib import Path
 
 WORKSPACE = Path(__file__).parent
 
+
+def _ensure_local_uv_cache_env() -> None:
+    """Default uv cache to the workspace if the global cache is unavailable."""
+    if os.environ.get("UV_CACHE_DIR"):
+        return
+    cache_dir = WORKSPACE / ".uv-cache"
+    try:
+        cache_dir.mkdir(exist_ok=True)
+        os.environ["UV_CACHE_DIR"] = str(cache_dir)
+    except OSError:
+        pass
+
+
+_ensure_local_uv_cache_env()
+
 # ── Non-interactive / build-backend detection ──────────────────────────
 #
 # We use TWO signals (narrow and explicit) to avoid the false-positive
@@ -207,6 +222,8 @@ MESSAGES = {
         "npm_not_found": "npm not found (should come with Node.js)",
         "prereq_install_failed_header": "The following tools could not be installed:",
         "prereq_install_manually_retry": "Install them manually and run setup again.",
+        "optional_cli_missing_header": "Agent CLI tools not found; setup can continue, but agents will not run until installed:",
+        "optional_cli_install_later": "Install later with:",
         "invalid_choice_local_mode": "Invalid choice '{choice}'. Using local mode.",
         "no_domain_local_mode": "No domain provided, using local mode",
         "nginx_config_test_failed": "Nginx config test failed",
@@ -385,6 +402,8 @@ MESSAGES = {
         "npm_not_found": "npm não encontrado (deveria vir com o Node.js)",
         "prereq_install_failed_header": "Os seguintes utilitários não puderam ser instalados:",
         "prereq_install_manually_retry": "Instale-os manualmente e execute o setup novamente.",
+        "optional_cli_missing_header": "CLIs de agentes não encontradas; o setup pode continuar, mas os agentes não vão rodar até serem instalados:",
+        "optional_cli_install_later": "Instale depois com:",
         "invalid_choice_local_mode": "Opção inválida '{choice}'. Usando modo local.",
         "no_domain_local_mode": "Nenhum domínio informado, usando modo local",
         "nginx_config_test_failed": "Teste de configuração do nginx falhou",
@@ -563,6 +582,8 @@ MESSAGES = {
         "npm_not_found": "npm no encontrado (debería venir con Node.js)",
         "prereq_install_failed_header": "Las siguientes herramientas no pudieron instalarse:",
         "prereq_install_manually_retry": "Instálalas manualmente y ejecuta el setup de nuevo.",
+        "optional_cli_missing_header": "CLIs de agentes no encontradas; el setup puede continuar, pero los agentes no funcionarán hasta instalarlas:",
+        "optional_cli_install_later": "Instala después con:",
         "invalid_choice_local_mode": "Opción inválida '{choice}'. Usando modo local.",
         "no_domain_local_mode": "No se proporcionó dominio, usando modo local",
         "nginx_config_test_failed": "La prueba de configuración de nginx falló",
@@ -783,6 +804,7 @@ def check_prerequisites():
         print(f"\r  {GREEN}✓{RESET} {T('sys_packages_updated')}       ")
 
     missing = []
+    optional_missing = []
 
     # build-essential (required for native npm packages like node-pty)
     try:
@@ -855,7 +877,7 @@ def check_prerequisites():
     # Claude Code CLI
     if not _check_tool("Claude Code CLI", ["claude", "--version"],
                         install_cmd="npm install -g @anthropic-ai/claude-code"):
-        missing.append("claude")
+        optional_missing.append(("claude", "npm install -g @anthropic-ai/claude-code"))
 
     # OpenClaude (required for non-Anthropic providers)
     # min_version=(0, 3, 0) forces an upgrade on systems that already have
@@ -865,9 +887,16 @@ def check_prerequisites():
     if not _check_tool("OpenClaude", ["openclaude", "--version"],
                         install_cmd="npm install -g @gitlawb/openclaude@latest",
                         min_version=(0, 3, 0)):
-        missing.append("openclaude")
+        optional_missing.append(("openclaude", "npm install -g @gitlawb/openclaude@latest"))
 
     print()
+
+    if optional_missing:
+        print(f"  {YELLOW}!{RESET} {T('optional_cli_missing_header')}")
+        for name, install_cmd in optional_missing:
+            print(f"    {YELLOW}•{RESET} {name}")
+            print(f"      {DIM}{T('optional_cli_install_later')} {install_cmd}{RESET}")
+        print()
 
     if missing:
         print(f"  {RED}{T('prereq_install_failed_header')}{RESET}")
@@ -1282,13 +1311,21 @@ def choose_provider() -> str:
 
 def ask(prompt: str, default: str = "") -> str:
     suffix = f" [{default}]" if default else ""
-    val = input(f"  {CYAN}>{RESET} {prompt}{suffix}: ").strip()
+    try:
+        val = input(f"  {CYAN}>{RESET} {prompt}{suffix}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return default
     return val or default
 
 
 def ask_bool(prompt: str, default: bool = True) -> bool:
     suffix = "[Y/n]" if default else "[y/N]"
-    val = input(f"  {CYAN}>{RESET} {prompt} {suffix}: ").strip().lower()
+    try:
+        val = input(f"  {CYAN}>{RESET} {prompt} {suffix}: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return default
     if not val:
         return default
     return val in ("y", "yes", "1", "true")
@@ -1820,7 +1857,7 @@ KillMode=none
 User={service_user}
 Group={service_user}
 WorkingDirectory={install_dir}
-Environment=PATH={service_home}/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH={service_home}/.npm-global/bin:{service_home}/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME={service_home}
 ExecStart=/bin/bash {install_dir}/start-services.sh
 ExecStop=/bin/bash -c 'pkill -f "terminal-server/bin/server.js" 2>/dev/null; pkill -f "dashboard/backend.*app.py" 2>/dev/null'
@@ -1836,6 +1873,16 @@ WantedBy=multi-user.target
     os.system(f"systemctl start {service_name}")
     print(f"  {GREEN}✓{RESET} {T('systemd_service_created')}")
     print(f"  {DIM}  {T('systemd_manage_hint', service=service_name)}{RESET}")
+
+
+def _tcp_port_open(host: str, port: int, timeout: float = 3.0) -> bool:
+    """Return True when a local service accepts TCP connections."""
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def main():
@@ -2000,7 +2047,7 @@ def main():
         # ``su -c '...'`` may not see the ``uv`` we just installed for them.
         ret = os.system(
             f"su - {_sudo_user} -c "
-            f"'export PATH=$HOME/.local/bin:$PATH && cd {WORKSPACE} && uv sync -q' "
+            f"'export PATH=$HOME/.local/bin:$PATH && export UV_CACHE_DIR={WORKSPACE}/.uv-cache && cd {WORKSPACE} && uv sync -q' "
             f"2>{WORKSPACE}/logs/uv-sync.log"
         )
     else:
@@ -2048,70 +2095,18 @@ def main():
     (WORKSPACE / "dashboard" / "data").mkdir(parents=True, exist_ok=True)
 
     # Determine the service user.
-    # Priority: SUDO_USER (ran with sudo) > create 'evonexus' user (root on VPS) > current user
+    # LAN installs should run systemd as the operator user, not as a dedicated
+    # evonexus account. If setup is invoked through sudo, SUDO_USER is the
+    # operator. If root invokes setup directly, do not create a hidden user;
+    # the operator can install LAN services explicitly with:
+    #   sudo make service-install
     sudo_user = os.environ.get("SUDO_USER", "")
     service_user = sudo_user  # may be empty
 
     if os.getuid() == 0 and not sudo_user and is_remote:
-        # Running as root directly (common on VPS) — create dedicated user
-        service_user = "evonexus"
-        print(f"\n  {DIM}Creating dedicated service user '{service_user}'...{RESET}")
-        ret = os.system(f"id {service_user} >/dev/null 2>&1")
-        if ret != 0:
-            os.system(f"useradd -m -s /bin/bash {service_user}")
-            print(f"  {GREEN}✓{RESET} User '{service_user}' created")
-        else:
-            print(f"  {DIM}✓ User '{service_user}' already exists{RESET}")
-
-        # Copy installation to user home
-        service_home = f"/home/{service_user}"
-        service_dir = f"{service_home}/evo-nexus"
-        if str(WORKSPACE.resolve()) != service_dir:
-            print(f"  {DIM}Copying installation to {service_dir}...{RESET}")
-            os.system(f"rm -rf {service_dir}")
-            os.system(f"cp -a {WORKSPACE} {service_dir}")
-            print(f"  {GREEN}✓{RESET} Copied to {service_dir}")
-        # Update WORKSPACE reference for start-services.sh
-        install_dir = Path(service_dir)
-
-        # Install uv + claude-code for the service user
-        ret = os.system(f"su - {service_user} -c 'command -v uv' >/dev/null 2>&1")
-        if ret != 0:
-            print(f"  {DIM}Installing uv for {service_user}...{RESET}")
-            os.system(f"su - {service_user} -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' >/dev/null 2>&1")
-            print(f"  {GREEN}✓{RESET} uv installed")
-
-        ret = os.system(f"su - {service_user} -c 'export PATH=$HOME/.local/bin:$PATH && command -v claude' >/dev/null 2>&1")
-        if ret != 0:
-            print(f"  {DIM}Installing Claude Code for {service_user}...{RESET}")
-            os.system(f"su - {service_user} -c 'npm install -g @anthropic-ai/claude-code --prefix ~/.local' >/dev/null 2>&1")
-            print(f"  {GREEN}✓{RESET} Claude Code installed")
-
-        # OpenClaude is required for non-Anthropic providers (OpenAI, Codex OAuth,
-        # OpenRouter, Gemini, etc.). Without it, switching provider in the
-        # dashboard does not work for the service user.
-        # Check if installed AND on a new-enough version (0.3.0+); otherwise (re)install.
-        oc_version = subprocess.run(
-            ["su", "-", service_user, "-c", "export PATH=$HOME/.local/bin:$PATH && openclaude --version 2>/dev/null || true"],
-            capture_output=True, text=True, timeout=10,
-        ).stdout.strip()
-        oc_parsed = _parse_semver(oc_version)
-        oc_ok = oc_parsed is not None and oc_parsed >= (0, 3, 0)
-        if not oc_ok:
-            if oc_parsed is not None:
-                print(f"  {DIM}Upgrading OpenClaude for {service_user} (found {oc_version}, need 0.3.0+)...{RESET}")
-            else:
-                print(f"  {DIM}Installing OpenClaude for {service_user}...{RESET}")
-            os.system(f"su - {service_user} -c 'npm install -g @gitlawb/openclaude@latest --prefix ~/.local' >/dev/null 2>&1")
-            print(f"  {GREEN}✓{RESET} OpenClaude installed")
-
-        # Sync deps as service user
-        print(f"  {DIM}Syncing dependencies as {service_user}...{RESET}")
-        os.system(f"su - {service_user} -c 'export PATH=$HOME/.local/bin:$PATH && cd {service_dir} && uv sync -q' 2>/dev/null")
-
-        # Fix ownership
-        os.system(f"chown -R {service_user}:{service_user} {service_dir}")
-        os.system(f"chown -R {service_user}:{service_user} {service_home}")
+        print(f"\n  {YELLOW}!{RESET} Running as root without SUDO_USER; skipping dedicated service user creation.")
+        print(f"    {DIM}For LAN systemd services, run: sudo make service-install{RESET}")
+        install_dir = WORKSPACE
     else:
         install_dir = WORKSPACE
 
@@ -2131,7 +2126,7 @@ def main():
 
     print(f"\n  {DIM}{T('starting_dashboard_services')}{RESET}")
     # Stop any existing services
-    os.system("systemctl stop evo-nexus 2>/dev/null")
+    os.system("systemctl stop evo-nexus >/dev/null 2>&1")
     os.system("pkill -f 'terminal-server/bin/server.js' 2>/dev/null")
     os.system("pkill -f 'app.py' 2>/dev/null")
     os.system("sleep 1")
@@ -2154,7 +2149,9 @@ def main():
     if startup_script.exists():
         os.chmod(startup_script, 0o755)
 
-    # Create systemd service (remote/VPS only, when we have a service user)
+    # Create systemd service (remote/VPS only, when setup was invoked via sudo).
+    # LAN installs should use `sudo make service-install` so the services run
+    # as the operator user with the expected npm/uv/Claude CLI PATH.
     if is_remote and service_user and os.getuid() == 0:
         _setup_systemd_service(service_user, install_dir, logs_dir)
     elif service_user:
@@ -2165,17 +2162,15 @@ def main():
 
     import time as _time
     _time.sleep(3)
-    # Verify
-    import urllib.request as _urllib
-    try:
-        _urllib.urlopen("http://localhost:32352", timeout=3)
+    # Verify by TCP connect. The terminal server is primarily a WebSocket
+    # endpoint, so HTTP status checks can raise even when the listener is up.
+    if _tcp_port_open("127.0.0.1", 32352):
         print(f"  {GREEN}✓{RESET} {T('terminal_started')}")
-    except Exception:
+    else:
         print(f"  {YELLOW}!{RESET} {T('terminal_not_started')}")
-    try:
-        _urllib.urlopen("http://localhost:8080", timeout=3)
+    if _tcp_port_open("127.0.0.1", dashboard_port):
         print(f"  {GREEN}✓{RESET} {T('dashboard_started')}")
-    except Exception:
+    else:
         print(f"  {YELLOW}!{RESET} {T('dashboard_not_started')}")
 
     dashboard_url = access_config.get('url', f'http://localhost:{dashboard_port}')

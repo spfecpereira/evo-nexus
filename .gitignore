@@ -76,6 +76,7 @@ _evo-output/
 
 # ── Python ────────────────────────────────
 .venv/
+.uv-cache/
 __pycache__/
 *.pyc
 
